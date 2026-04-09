@@ -1,0 +1,38 @@
+name: Tesla FSD Monitor
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'   # every 2 hours
+  workflow_dispatch:        # allows manual run
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+          pip install requests beautifulsoup4 pillow pytesseract geopy
+      
+      - name: Run monitoring script
+        env:
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python tesla_fsd_monitor.py
+      
+      - name: Commit updated seen_listings.json
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add seen_listings.json
+          git commit -m "Update seen listings [skip ci]" || echo "No changes"
+          git push

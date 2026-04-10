@@ -1,6 +1,5 @@
 import requests
 from bs4 import BeautifulSoup
-import time
 import json
 import os
 from datetime import datetime
@@ -12,7 +11,11 @@ from PIL import Image
 import io
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import re
+
+# ====================== TESSERACT PATH FIX (REQUIRED ON GITHUB ACTIONS) ======================
+pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
 # ====================== YOUR SETTINGS ======================
 ZIP_CODE = "93453"
@@ -21,7 +24,7 @@ EMAIL_TO = os.getenv("EMAIL_TO", "amargaritan@gmail.com")
 FSD_KEYWORDS = [
     "full self-driving", "fsd", "included package", "full self drive",
     "included software", "hw4", "transferable", "purchased fsd",
-    "full self-driving capability", "autopilot hw4"
+    "full self-driving capability", "autopilot hw4", "hw 4", "hardware 4"
 ]
 
 SEEN_FILE = "seen_listings.json"
@@ -32,7 +35,7 @@ if os.path.exists(SEEN_FILE):
 else:
     seen = {}
 
-geolocator = Nominatim(user_agent="tesla_fsd_monitor")
+geolocator = Nominatim(user_agent="tesla_fsd_monitor_atascadero")
 
 def parse_price(price_str):
     if not price_str or price_str == "Unknown":
@@ -43,12 +46,15 @@ def parse_price(price_str):
         return None
 
 def send_email(subject, body):
-    msg = MIMEMultipart()
-    msg['From'] = os.getenv("EMAIL_FROM")
-    msg['To'] = EMAIL_TO
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'html'))
+    if not os.getenv("EMAIL_FROM") or not os.getenv("EMAIL_PASSWORD"):
+        print("⚠️ Email credentials not set in secrets. Skipping send.")
+        return
     try:
+        msg = MIMEMultipart()
+        msg['From'] = os.getenv("EMAIL_FROM")
+        msg['To'] = EMAIL_TO
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(os.getenv("EMAIL_FROM"), os.getenv("EMAIL_PASSWORD"))
@@ -58,7 +64,7 @@ def send_email(subject, body):
     except Exception as e:
         print(f"❌ Email send failed: {e}")
 
-# ====================== ALL 20 DEALERS ======================
+# ====================== ALL DEALERS (20 original + AutoTempest) ======================
 DEALERS = [
     {"name": "DriveCoolCars", "url": "https://www.drivecoolcars.com/newandusedcars?Year=2024&MakeName=Tesla&ModelName=Model%20Y&ClearAll=1", "detail_pattern": r"/vdp/"},
     {"name": "Evolving Motors", "url": "https://www.evolvingmotors.com/inventory/?make=tesla&model=model+y", "detail_pattern": r"/inventory/tesla/model-y/"},
@@ -80,24 +86,29 @@ DEALERS = [
     {"name": "OC Chief Auto 2025", "url": "https://www.occhiefautopch.com/pre-owned-cars/2025/Tesla/Model-Y?estimatedrangestart=250", "detail_pattern": r"/pre-owned-cars/"},
     {"name": "OC Chief Auto 2026", "url": "https://www.occhiefautopch.com/pre-owned-cars/2026/Tesla/Model-Y?estimatedrangestart=250", "detail_pattern": r"/pre-owned-cars/"},
     {"name": "STG Auto Group", "url": "https://www.stgautogroup.com/used-vehicles?make[]=Tesla&model[]=Model%20Y&trim[]=Long%20Range&mileage[lt]=50000&year[gt]=2023", "detail_pattern": r"/used-vehicles/"},
+    # New AutoTempest search (filtered for clean title, AWD, price/mile/year range, near your ZIP)
+    {"name": "AutoTempest", 
+     "url": "https://www.autotempest.com/results?drive=awd&localization=country&make=tesla&maxmiles=55000&maxprice=55000&minmiles=0&minprice=27000&minyear=2023&model=modely&saletype=classified&title=clean&zip=93453", 
+     "detail_pattern": r"/vehicle/|/details/|carvana.com/vehicle/|cars.com/vehicledetail/"},
 ]
 
 def scrape_list_page(dealer):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        response = requests.get(dealer["url"], headers=headers, timeout=20)
+        response = requests.get(dealer["url"], headers=headers, timeout=25)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         potential_links = []
         for a in soup.find_all('a', href=True):
             href = a['href']
             if re.search(dealer["detail_pattern"], href, re.I):
-                full_url = href if href.startswith('http') else 'https://' + response.url.split('/')[2] + ('' if href.startswith('/') else '/') + href
-                card_text = a.parent.get_text(strip=True) if a.parent else ""
+                full_url = href if href.startswith('http') else f"https://{response.url.split('/')[2]}{href if href.startswith('/') else '/' + href}"
+                card_text = (a.parent.get_text(strip=True) if a.parent else a.get_text(strip=True))[:600]
                 price = next((t for t in re.findall(r'\$\d{1,3}(?:,\d{3})*', card_text)), 'Unknown')
                 miles = next((t for t in re.findall(r'\d{1,3}(?:,\d{3})* mi', card_text, re.I)), 'Unknown')
                 vin_match = re.search(r'[A-HJ-NPR-Z0-9]{17}', card_text)
-                vin = vin_match.group(0) if vin_match else full_url.split('/')[-1]
-                title = a.get_text(strip=True)[:150] or "Tesla Model Y"
+                vin = vin_match.group(0) if vin_match else full_url.split('/')[-1].upper()[:17]
+                title = a.get_text(strip=True)[:200] or "Tesla Model Y"
                 potential_links.append({
                     'title': title,
                     'price': price,
@@ -108,28 +119,29 @@ def scrape_list_page(dealer):
                 })
         return list({v['detail_url']: v for v in potential_links}.values())
     except Exception as e:
-        print(f"⚠️ Error scraping {dealer['name']}: {e}")
+        print(f"⚠️ Error scraping list page {dealer['name']}: {e}")
         return []
 
 def scrape_detail(url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         description = soup.get_text().lower()
         has_fsd_text = any(kw in description for kw in FSD_KEYWORDS)
         has_fsd_screen = False
         for img in soup.find_all('img'):
             img_url = img.get('src') or img.get('data-src') or img.get('data-lazy') or img.get('data-original')
-            if img_url and img_url.startswith('http') and any(ext in img_url.lower() for ext in ('.jpg', '.png', '.jpeg')):
+            if img_url and img_url.startswith('http') and any(ext in img_url.lower() for ext in ('.jpg', '.png', '.jpeg', '.webp')):
                 try:
-                    img_resp = requests.get(img_url, headers=headers, timeout=8)
+                    img_resp = requests.get(img_url, headers=headers, timeout=10)
                     img_data = Image.open(io.BytesIO(img_resp.content))
                     ocr_text = pytesseract.image_to_string(img_data).lower()
                     if any(kw in ocr_text for kw in FSD_KEYWORDS):
                         has_fsd_screen = True
                         break
-                except:
+                except Exception:
                     continue
         return {'has_fsd_text': has_fsd_text, 'has_fsd_screen': has_fsd_screen}
     except Exception as e:
@@ -141,7 +153,10 @@ current_vins_this_run = set()
 new_alerts = []
 sold_alerts = []
 
+print(f"🚀 Starting scan at {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
+
 for dealer in DEALERS:
+    print(f"Scanning {dealer['name']}...")
     listings = scrape_list_page(dealer)
     for listing in listings:
         vin = listing['vin']
@@ -155,11 +170,11 @@ for dealer in DEALERS:
             if is_fsd_hit and current_price_num and old_price_num and current_price_num < old_price_num:
                 distance = "National"
                 try:
-                    location = geolocator.geocode(dealer["name"] + ", USA")
+                    location = geolocator.geocode(dealer["name"] + ", USA", timeout=10)
                     if location:
                         dist = geodesic(USER_COORDS, (location.latitude, location.longitude)).miles
                         distance = f"{dist:.0f} miles from you"
-                except:
+                except (GeocoderTimedOut, GeocoderServiceError, Exception):
                     pass
                 alert_body = f"""
                 <h2>💰 Price Drop on FSD-Loaded Model Y!</h2>
@@ -177,11 +192,11 @@ for dealer in DEALERS:
         if is_fsd_hit:
             distance = "National"
             try:
-                location = geolocator.geocode(dealer["name"] + ", USA")
+                location = geolocator.geocode(dealer["name"] + ", USA", timeout=10)
                 if location:
                     dist = geodesic(USER_COORDS, (location.latitude, location.longitude)).miles
                     distance = f"{dist:.0f} miles from you"
-            except:
+            except (GeocoderTimedOut, GeocoderServiceError, Exception):
                 pass
             alert_body = f"""
             <h2>🚀 New FSD-Loaded Model Y Found!</h2>
@@ -195,7 +210,7 @@ for dealer in DEALERS:
             new_alerts.append(alert_body)
             seen[vin] = {"price": current_price_num, "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
 
-# Detect likely sold vehicles
+# Detect sold/removed vehicles
 for vin in list(seen.keys()):
     if vin not in current_vins_this_run:
         last_price = seen[vin].get("price")
@@ -204,8 +219,8 @@ for vin in list(seen.keys()):
         <h2>🚗 Likely Sold / Removed</h2>
         <p><strong>Dealer:</strong> {dealer_name}</p>
         <p><strong>VIN:</strong> {vin}</p>
-        <p><strong>Likely sale price:</strong> ${last_price:,.0f} (last known price)</p>
-        <p><small>This vehicle was a confirmed FSD hit but no longer appears.</small></p>
+        <p><strong>Last known price:</strong> ${last_price:,.0f if last_price else 'Unknown'}</p>
+        <p><small>This was a confirmed FSD hit but no longer appears.</small></p>
         """
         sold_alerts.append(alert_body)
         del seen[vin]
@@ -216,9 +231,9 @@ if all_alerts:
     body = "\n\n".join(all_alerts)
     send_email(subject, body)
 else:
-    print("No new hits, price drops, or sold vehicles this run")
+    print("No new hits, price drops, or sold vehicles this run.")
 
 with open(SEEN_FILE, 'w') as f:
     json.dump(seen, f, indent=2)
 
-print(f"Run complete — {len(new_alerts)} new/price alerts + {len(sold_alerts)} sold alerts")
+print(f"✅ Run complete — {len(new_alerts)} new/price alerts + {len(sold_alerts)} sold alerts")

@@ -50,15 +50,17 @@ def send_email(subject, body):
         msg['To'] = EMAIL_TO
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'html'))
+
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(email_from, email_pass)
+        # Most reliable method for Gmail
         server.sendmail(email_from, EMAIL_TO, msg.as_string())
         server.quit()
-        print("✅ Email sent successfully to " + EMAIL_TO)
+        print(f"✅ Email sent successfully to {EMAIL_TO}")
         return True
     except Exception as e:
-        print(f"❌ Email failed: {type(e).__name__}: {e}")
+        print(f"❌ Email failed: {e}")
         return False
 
 # ====================== DEALERS ======================

@@ -26,7 +26,6 @@ FSD_KEYWORDS = [
 
 SEEN_FILE = "seen_listings.json"
 
-# Load or initialize seen dict: {vin: {"price": float, "last_seen": str, "dealer": str}}
 if os.path.exists(SEEN_FILE):
     with open(SEEN_FILE) as f:
         seen = json.load(f)
@@ -55,12 +54,12 @@ def send_email(subject, body):
         server.login(os.getenv("EMAIL_FROM"), os.getenv("EMAIL_PASSWORD"))
         server.sendmail(os.getenv("EMAIL_FROM"), EMAIL_TO, msg.as_string())
         server.quit()
-        print("Email sent successfully")
+        print("✅ Email sent successfully")
     except Exception as e:
-        print(f"Email send failed: {e}")
+        print(f"❌ Email send failed: {e}")
 
-# ====================== DEALER CONFIGS (ALL 20) ======================
-DEALERS = [  # ← your full list from before
+# ====================== ALL 20 DEALERS ======================
+DEALERS = [
     {"name": "DriveCoolCars", "url": "https://www.drivecoolcars.com/newandusedcars?Year=2024&MakeName=Tesla&ModelName=Model%20Y&ClearAll=1", "detail_pattern": r"/vdp/"},
     {"name": "Evolving Motors", "url": "https://www.evolvingmotors.com/inventory/?make=tesla&model=model+y", "detail_pattern": r"/inventory/tesla/model-y/"},
     {"name": "DongCar 2023", "url": "https://www.dongcarinc.com/inventory/tesla/model-y/?vehicle_year=2023", "detail_pattern": r"/inventory/"},
@@ -83,7 +82,59 @@ DEALERS = [  # ← your full list from before
     {"name": "STG Auto Group", "url": "https://www.stgautogroup.com/used-vehicles?make[]=Tesla&model[]=Model%20Y&trim[]=Long%20Range&mileage[lt]=50000&year[gt]=2023", "detail_pattern": r"/used-vehicles/"},
 ]
 
-# (scrape_list_page and scrape_detail functions are unchanged from last version — they stay exactly as you already have them)
+def scrape_list_page(dealer):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        response = requests.get(dealer["url"], headers=headers, timeout=20)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        potential_links = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if re.search(dealer["detail_pattern"], href, re.I):
+                full_url = href if href.startswith('http') else 'https://' + response.url.split('/')[2] + ('' if href.startswith('/') else '/') + href
+                card_text = a.parent.get_text(strip=True) if a.parent else ""
+                price = next((t for t in re.findall(r'\$\d{1,3}(?:,\d{3})*', card_text)), 'Unknown')
+                miles = next((t for t in re.findall(r'\d{1,3}(?:,\d{3})* mi', card_text, re.I)), 'Unknown')
+                vin_match = re.search(r'[A-HJ-NPR-Z0-9]{17}', card_text)
+                vin = vin_match.group(0) if vin_match else full_url.split('/')[-1]
+                title = a.get_text(strip=True)[:150] or "Tesla Model Y"
+                potential_links.append({
+                    'title': title,
+                    'price': price,
+                    'miles': miles,
+                    'vin': vin,
+                    'detail_url': full_url,
+                    'dealer': dealer["name"]
+                })
+        return list({v['detail_url']: v for v in potential_links}.values())
+    except Exception as e:
+        print(f"⚠️ Error scraping {dealer['name']}: {e}")
+        return []
+
+def scrape_detail(url):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        description = soup.get_text().lower()
+        has_fsd_text = any(kw in description for kw in FSD_KEYWORDS)
+        has_fsd_screen = False
+        for img in soup.find_all('img'):
+            img_url = img.get('src') or img.get('data-src') or img.get('data-lazy') or img.get('data-original')
+            if img_url and img_url.startswith('http') and any(ext in img_url.lower() for ext in ('.jpg', '.png', '.jpeg')):
+                try:
+                    img_resp = requests.get(img_url, headers=headers, timeout=8)
+                    img_data = Image.open(io.BytesIO(img_resp.content))
+                    ocr_text = pytesseract.image_to_string(img_data).lower()
+                    if any(kw in ocr_text for kw in FSD_KEYWORDS):
+                        has_fsd_screen = True
+                        break
+                except:
+                    continue
+        return {'has_fsd_text': has_fsd_text, 'has_fsd_screen': has_fsd_screen}
+    except Exception as e:
+        print(f"⚠️ Error on detail page {url}: {e}")
+        return {'has_fsd_text': False, 'has_fsd_screen': False}
 
 # ====================== MAIN RUN ======================
 current_vins_this_run = set()
@@ -101,7 +152,6 @@ for dealer in DEALERS:
 
         if vin in seen:
             old_price_num = seen[vin].get("price")
-            # Price drop
             if is_fsd_hit and current_price_num and old_price_num and current_price_num < old_price_num:
                 distance = "National"
                 try:
@@ -121,11 +171,9 @@ for dealer in DEALERS:
                 <p><a href="{listing['detail_url']}">View Listing →</a></p>
                 """
                 new_alerts.append(alert_body)
-            # Update stored price
             seen[vin] = {"price": current_price_num or old_price_num, "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
             continue
 
-        # Brand-new FSD hit
         if is_fsd_hit:
             distance = "National"
             try:
@@ -147,7 +195,7 @@ for dealer in DEALERS:
             new_alerts.append(alert_body)
             seen[vin] = {"price": current_price_num, "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
 
-# === NEW: Detect likely sold vehicles ===
+# Detect likely sold vehicles
 for vin in list(seen.keys()):
     if vin not in current_vins_this_run:
         last_price = seen[vin].get("price")
@@ -156,14 +204,12 @@ for vin in list(seen.keys()):
         <h2>🚗 Likely Sold / Removed</h2>
         <p><strong>Dealer:</strong> {dealer_name}</p>
         <p><strong>VIN:</strong> {vin}</p>
-        <p><strong>Likely sale price:</strong> ${last_price:,.0f} (last known price before removal)</p>
-        <p><small>This vehicle was a confirmed FSD hit but no longer appears in listings.</small></p>
-        <p><small>Checked: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}</small></p>
+        <p><strong>Likely sale price:</strong> ${last_price:,.0f} (last known price)</p>
+        <p><small>This vehicle was a confirmed FSD hit but no longer appears.</small></p>
         """
         sold_alerts.append(alert_body)
-        del seen[vin]  # remove so we don't alert again
+        del seen[vin]
 
-# ====================== SEND EMAIL ======================
 all_alerts = new_alerts + sold_alerts
 if all_alerts:
     subject = f"🚀 {len(new_alerts)} New + {len(sold_alerts)} Sold/Price-Change FSD Model Y Update(s)"
@@ -172,7 +218,6 @@ if all_alerts:
 else:
     print("No new hits, price drops, or sold vehicles this run")
 
-# Save memory
 with open(SEEN_FILE, 'w') as f:
     json.dump(seen, f, indent=2)
 

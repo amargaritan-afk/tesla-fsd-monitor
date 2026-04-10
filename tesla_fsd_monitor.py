@@ -1,51 +1,60 @@
 import requests
 from bs4 import BeautifulSoup
-import time
 import json
 import os
 from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import pytesseract
-from PIL import Image
-import io
+import re
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
-import re
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 # ====================== YOUR SETTINGS ======================
 ZIP_CODE = "93453"
-USER_COORDS = (35.6, -120.7)  # Your location
+USER_COORDS = (35.6, -120.7)  # Atascadero, CA area
 EMAIL_TO = os.getenv("EMAIL_TO", "amargaritan@gmail.com")
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+
 FSD_KEYWORDS = [
     "full self-driving", "fsd", "included package", "full self drive",
     "included software", "hw4", "transferable", "purchased fsd",
-    "full self-driving capability", "autopilot hw4"
+    "full self-driving capability", "autopilot hw4", "hw 4", "hardware 4"
 ]
 
 SEEN_FILE = "seen_listings.json"
+
+# Load previously seen VINs
 if os.path.exists(SEEN_FILE):
     with open(SEEN_FILE) as f:
         seen = json.load(f)
 else:
     seen = []
 
-geolocator = Nominatim(user_agent="tesla_fsd_monitor")
+geolocator = Nominatim(user_agent="tesla_fsd_monitor_atascadero")
 
 def send_email(subject, body):
-    msg = MIMEMultipart()
-    msg['From'] = os.getenv("EMAIL_FROM")
-    msg['To'] = EMAIL_TO
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'html'))
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.starttls()
-    server.login(os.getenv("EMAIL_FROM"), os.getenv("EMAIL_PASSWORD"))
-    server.sendmail(os.getenv("EMAIL_FROM"), EMAIL_TO, msg.as_string())
-    server.quit()
+    if not EMAIL_FROM or not EMAIL_PASSWORD:
+        print("WARNING: Email credentials (EMAIL_FROM / EMAIL_PASSWORD) not set in secrets. Skipping email.")
+        return
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_FROM
+        msg['To'] = EMAIL_TO
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(EMAIL_FROM, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+        server.quit()
+        print(f"✅ Email sent: {subject}")
+    except Exception as e:
+        print(f"❌ ERROR sending email: {e}")
 
-# ====================== DEALER CONFIGS (ALL 20 LINKS) ======================
+# ====================== YOUR 20 DEALERS ======================
 DEALERS = [
     {"name": "DriveCoolCars", "url": "https://www.drivecoolcars.com/newandusedcars?Year=2024&MakeName=Tesla&ModelName=Model%20Y&ClearAll=1", "detail_pattern": r"/vdp/"},
     {"name": "Evolving Motors", "url": "https://www.evolvingmotors.com/inventory/?make=tesla&model=model+y", "detail_pattern": r"/inventory/tesla/model-y/"},
@@ -73,17 +82,18 @@ def scrape_list_page(dealer):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         response = requests.get(dealer["url"], headers=headers, timeout=20)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         potential_links = []
         for a in soup.find_all('a', href=True):
             href = a['href']
             if re.search(dealer["detail_pattern"], href, re.I):
-                full_url = href if href.startswith('http') else 'https://' + response.url.split('/')[2] + ('' if href.startswith('/') else '/') + href
-                card_text = a.parent.get_text(strip=True) if a.parent else ""
+                full_url = href if href.startswith('http') else f"https://{response.url.split('/')[2]}{href if href.startswith('/') else '/' + href}"
+                card_text = (a.parent.get_text(strip=True) if a.parent else a.get_text(strip=True))[:500]
                 price = next((t for t in re.findall(r'\$\d{1,3}(?:,\d{3})*', card_text)), 'Unknown')
                 miles = next((t for t in re.findall(r'\d{1,3}(?:,\d{3})* mi', card_text, re.I)), 'Unknown')
                 vin_match = re.search(r'[A-HJ-NPR-Z0-9]{17}', card_text)
-                vin = vin_match.group(0) if vin_match else full_url.split('/')[-1]
+                vin = vin_match.group(0) if vin_match else full_url.split('/')[-1].upper()[:17]
                 title = a.get_text(strip=True)[:150] or "Tesla Model Y"
                 potential_links.append({
                     'title': title,
@@ -94,69 +104,65 @@ def scrape_list_page(dealer):
                     'dealer': dealer["name"]
                 })
         return list({v['detail_url']: v for v in potential_links}.values())
-    except:
+    except Exception as e:
+        print(f"Error scraping list page {dealer['name']}: {e}")
         return []
 
 def scrape_detail(url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        description = soup.get_text().lower()
-        has_fsd_text = any(kw in description for kw in FSD_KEYWORDS)
-        has_fsd_screen = False
-        for img in soup.find_all('img'):
-            img_url = img.get('src') or img.get('data-src') or img.get('data-lazy') or img.get('data-original')
-            if img_url and img_url.startswith('http') and any(ext in img_url.lower() for ext in ('.jpg', '.png', '.jpeg')):
-                try:
-                    img_resp = requests.get(img_url, headers=headers, timeout=8)
-                    img_data = Image.open(io.BytesIO(img_resp.content))
-                    ocr_text = pytesseract.image_to_string(img_data).lower()
-                    if any(kw in ocr_text for kw in FSD_KEYWORDS):
-                        has_fsd_screen = True
-                        break
-                except:
-                    continue
-        return {'has_fsd_text': has_fsd_text, 'has_fsd_screen': has_fsd_screen}
-    except:
-        return {'has_fsd_text': False, 'has_fsd_screen': False}
+        response.raise_for_status()
+        description = response.text.lower()
+        has_fsd = any(kw in description for kw in FSD_KEYWORDS)
+        return {'has_fsd': has_fsd}
+    except Exception as e:
+        print(f"Error scraping detail page {url}: {e}")
+        return {'has_fsd': False}
 
 # ====================== MAIN RUN ======================
 new_alerts = []
+print(f"🚀 Starting FSD Model Y scan at {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
+
 for dealer in DEALERS:
+    print(f"Scanning {dealer['name']} ...")
     listings = scrape_list_page(dealer)
     for listing in listings:
         vin = listing['vin']
         if vin in seen:
             continue
         detail = scrape_detail(listing['detail_url'])
-        if detail['has_fsd_text'] or detail['has_fsd_screen']:
+        if detail['has_fsd']:
             distance = "National"
             try:
-                loc_text = dealer["name"]
-                location = geolocator.geocode(loc_text + ", USA")
+                location = geolocator.geocode(dealer["name"] + ", USA", timeout=10)
                 if location:
                     dist = geodesic(USER_COORDS, (location.latitude, location.longitude)).miles
-                    distance = f"{dist:.0f} miles from you"
-            except:
+                    distance = f"{dist:.0f} miles"
+            except (GeocoderTimedOut, GeocoderServiceError, Exception):
                 pass
+
             alert_body = f"""
             <h2>🚀 New FSD-Loaded Model Y Found!</h2>
             <p><strong>Dealer:</strong> {listing['dealer']}</p>
             <p><strong>Title:</strong> {listing['title']}</p>
             <p><strong>Price:</strong> {listing['price']} | <strong>Miles:</strong> {listing['miles']}</p>
             <p><strong>Distance:</strong> {distance}</p>
-            <p><strong>FSD Proof:</strong> Text: {'✓' if detail['has_fsd_text'] else '✗'} | Screen OCR: {'✓' if detail['has_fsd_screen'] else '✗'}</p>
-            <p><a href="{listing['detail_url']}">View Full Listing & Photos →</a></p>
+            <p><strong>FSD detected in listing text</strong></p>
+            <p><a href="{listing['detail_url']}">View Full Listing →</a></p>
             <p><small>Checked: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}</small></p>
             """
             new_alerts.append(alert_body)
             seen.append(vin)
+            print(f"✅ New match: {listing['title']} at {listing['dealer']}")
 
 if new_alerts:
     send_email(f"🚀 {len(new_alerts)} New FSD Model Y Match(es) Found!", "\n\n".join(new_alerts))
+else:
+    print("No new FSD matches found this run.")
 
+# Save updated seen list
 with open(SEEN_FILE, 'w') as f:
     json.dump(seen, f)
 
-print(f"Run complete - {len(new_alerts)} new alerts sent")
+print(f"✅ Run complete - {len(new_alerts)} new alerts")

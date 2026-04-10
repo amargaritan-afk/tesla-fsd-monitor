@@ -2,37 +2,43 @@ name: Tesla FSD Monitor
 
 on:
   schedule:
-    - cron: '0 */2 * * *'   # every 2 hours
-  workflow_dispatch:        # allows manual run
+    - cron: '0 */2 * * *'     # Every 2 hours
+  workflow_dispatch:          # Manual trigger button
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
+    
+    # Fix for Node.js 20 deprecation warning
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO || 'amargaritan@gmail.com' }}
+
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
+
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      
+
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y tesseract-ocr
-          pip install requests beautifulsoup4 pillow pytesseract geopy
-      
-      - name: Run monitoring script
-        env:
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          pip install requests beautifulsoup4 geopy
+
+      - name: Run Tesla FSD Monitor
         run: python tesla_fsd_monitor.py
-      
-      - name: Commit updated seen_listings.json
+
+      - name: Commit updated seen_listings.json (if changed)
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git add seen_listings.json
-          git commit -m "Update seen listings [skip ci]" || echo "No changes"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to seen_listings.json"
+          else
+            git commit -m "Update seen listings [skip ci]"
+            git push
+          fi

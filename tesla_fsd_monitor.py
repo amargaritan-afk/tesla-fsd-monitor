@@ -8,11 +8,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import re
 
 # ====================== SETTINGS ======================
-USER_COORDS = (35.6, -120.7)   # Atascadero area
+USER_COORDS = (35.6, -120.7)
 EMAIL_TO = os.getenv("EMAIL_TO", "amargaritan@gmail.com")
 
 FSD_KEYWORDS = [
@@ -43,7 +42,7 @@ def send_email(subject, body):
     email_from = os.getenv("EMAIL_FROM")
     email_pass = os.getenv("EMAIL_PASSWORD")
     if not email_from or not email_pass:
-        print("⚠️ Email credentials missing.")
+        print("⚠️ Email credentials missing in GitHub Secrets.")
         return False
     try:
         msg = MIMEMultipart()
@@ -51,19 +50,18 @@ def send_email(subject, body):
         msg['To'] = EMAIL_TO
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'html'))
-
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(email_from, email_pass)
-        server.send_message(msg)
+        server.sendmail(email_from, EMAIL_TO, msg.as_string())
         server.quit()
-        print("✅ Email sent successfully!")
+        print("✅ Email sent successfully to " + EMAIL_TO)
         return True
     except Exception as e:
-        print(f"❌ Email failed: {e}")
+        print(f"❌ Email failed: {type(e).__name__}: {e}")
         return False
 
-# ====================== ALL DEALERS ======================
+# ====================== DEALERS ======================
 DEALERS = [
     {"name": "DriveCoolCars", "url": "https://www.drivecoolcars.com/newandusedcars?Year=2024&MakeName=Tesla&ModelName=Model%20Y&ClearAll=1", "detail_pattern": r"/vdp/"},
     {"name": "Evolving Motors", "url": "https://www.evolvingmotors.com/inventory/?make=tesla&model=model+y", "detail_pattern": r"/inventory/tesla/model-y/"},
@@ -112,7 +110,7 @@ def scrape_list_page(dealer):
         print(f"   → {dealer['name']}: {len(potential_links)} listings found")
         return list({v['detail_url']: v for v in potential_links}.values())
     except Exception as e:
-        print(f"⚠️ Error scraping list page {dealer['name']}: {e}")
+        print(f"⚠️ Error scraping {dealer['name']}: {e}")
         return []
 
 def scrape_detail(url):
@@ -125,8 +123,6 @@ def scrape_detail(url):
         if has_fsd:
             matched = [kw for kw in FSD_KEYWORDS if kw in description]
             print(f"   → ✅ TEXT MATCH on {url} | Keywords: {matched}")
-        elif "drivecoolcars" in url.lower():
-            print(f"   → DriveCoolCars checked - no strong FSD match: {url}")
         return {'has_fsd': has_fsd}
     except Exception as e:
         print(f"⚠️ Error on detail page {url}: {e}")
@@ -157,7 +153,6 @@ for dealer in DEALERS:
             seen[vin] = {"price": parse_price(listing['price']), "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
             continue
 
-        # New match
         distance = "National"
         try:
             loc = geolocator.geocode(dealer["name"] + ", USA", timeout=8)
@@ -179,38 +174,13 @@ for dealer in DEALERS:
         seen[vin] = {"price": parse_price(listing['price']), "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
         print(f"✅ New match added: {listing['title']} at {listing['dealer']}")
 
-# Save seen list
 with open(SEEN_FILE, 'w') as f:
     json.dump(seen, f, indent=2)
 
 if new_alerts:
     subject = f"🚀 {len(new_alerts)} New FSD/HW4 Model Y Match(es) Found!"
     body = "\n\n".join(new_alerts)
-   def send_email(subject, body):
-    email_from = os.getenv("EMAIL_FROM")
-    email_pass = os.getenv("EMAIL_PASSWORD")
-    if not email_from or not email_pass:
-        print("⚠️ Email credentials missing in GitHub Secrets.")
-        return False
-    
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = email_from
-        msg['To'] = EMAIL_TO
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'html'))
-
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(email_from, email_pass)
-        # Use sendmail + as_string() - this fixes the syntax error
-        server.sendmail(email_from, EMAIL_TO, msg.as_string())
-        server.quit()
-        print("✅ Email sent successfully to " + EMAIL_TO)
-        return True
-    except Exception as e:
-        print(f"❌ Email failed: {type(e).__name__}: {e}")
-        return False
+    send_email(subject, body)
 else:
     print("No new matches this run.")
 

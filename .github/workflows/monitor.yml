@@ -1,44 +1,39 @@
-name: Tesla FSD Monitor
+  name: Tesla FSD Monitor
 
 on:
   schedule:
-    - cron: '0 */2 * * *'     # Every 2 hours
-  workflow_dispatch:          # Manual trigger button
+    - cron: '0 */2 * * *'   # every 2 hours
+  workflow_dispatch:
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    
-    # Fix for Node.js 20 deprecation warning
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-      EMAIL_TO: ${{ secrets.EMAIL_TO || 'amargaritan@gmail.com' }}
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
+      
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install dependencies
+      
+      - name: Install system + Python dependencies (fixed)
         run: |
-          pip install requests beautifulsoup4 geopy
-
-      - name: Run Tesla FSD Monitor
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+          python -m pip install --upgrade pip
+          python -m pip install requests beautifulsoup4 pillow pytesseract geopy
+      
+      - name: Run monitoring script
+        env:
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python tesla_fsd_monitor.py
-
-      - name: Commit updated seen_listings.json (if changed)
+      
+      - name: Commit updated seen_listings.json
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git add seen_listings.json
-          if git diff --staged --quiet; then
-            echo "No changes to seen_listings.json"
-          else
-            git commit -m "Update seen listings [skip ci]"
-            git push
-          fi
+          git add seen_listings.json || true
+          git commit -m "Update seen listings [skip ci]" || echo "No changes"
+          git push || echo "Push skipped"      

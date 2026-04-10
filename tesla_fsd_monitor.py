@@ -6,32 +6,12 @@ from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import pytesseract
-from PIL import Image
-import io
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import re
 
-# ====================== SAFE TESSERACT INITIALIZATION ======================
-OCR_AVAILABLE = False
-try:
-    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-    # Test it once
-    _ = pytesseract.image_to_string(Image.new('RGB', (50, 50), color='white'))
-    OCR_AVAILABLE = True
-    print("✅ Tesseract OCR initialized successfully on GitHub runner")
-except Exception as e:
-    print(f"⚠️ Tesseract failed to start: {e}")
-    print("   → OCR will be disabled for this run. Text-only matching will continue.")
-    # Fallback: disable OCR calls
-    def dummy_ocr(*args, **kwargs):
-        return ""
-    pytesseract.image_to_string = dummy_ocr
-
 # ====================== YOUR SETTINGS ======================
-# (rest of your script stays exactly the same from here: ZIP_CODE, FSD_KEYWORDS, SEEN_FILE, etc.)
 ZIP_CODE = "93453"
 USER_COORDS = (35.6, -120.7)
 EMAIL_TO = os.getenv("EMAIL_TO", "amargaritan@gmail.com")
@@ -42,7 +22,7 @@ FSD_KEYWORDS = [
     "full self-driving capability", "autopilot hw4", "hw 4", "hardware 4",
     "fsd included", "included fsd", "fsd package", "full self-driving included",
     "full self driving included", "included fsd package", "fsd (included)",
-    "capability included", "software included"
+    "capability included", "software included", "included full self-driving"
 ]
 
 SEEN_FILE = "seen_listings.json"
@@ -55,16 +35,35 @@ else:
 
 geolocator = Nominatim(user_agent="tesla_fsd_monitor_atascadero")
 
-# (parse_price, send_email, DEALERS list, scrape_list_page remain exactly the same as in the previous full version I gave you)
+def parse_price(price_str):
+    if not price_str or price_str == "Unknown":
+        return None
+    try:
+        return float(re.sub(r'[^0-9.]', '', price_str))
+    except:
+        return None
 
-# ... [paste the rest of the functions and main logic from the last full script I provided, including the expanded debug prints in scrape_detail] ...
+def send_email(subject, body):
+    if not os.getenv("EMAIL_FROM") or not os.getenv("EMAIL_PASSWORD"):
+        print("⚠️ Email credentials not set in secrets. Skipping send.")
+        return
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = os.getenv("EMAIL_FROM")
+        msg['To'] = EMAIL_TO
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(os.getenv("EMAIL_FROM"), os.getenv("EMAIL_PASSWORD"))
+        server.sendmail(os.getenv("EMAIL_FROM"), EMAIL_TO, msg.as_string())
+        server.quit()
+        print("✅ Email sent successfully")
+    except Exception as e:
+        print(f"❌ Email send failed: {e}")
 
-# At the very end, make sure it always prints this:
-print(f"✅ Run complete — {len(new_alerts)} new/price alerts + {len(sold_alerts)} sold alerts")
-
-# ====================== ALL DEALERS (including AutoTempest) ======================
+# ====================== DEALERS (your 20 + AutoTempest) ======================
 DEALERS = [
-    # ... (your original 20 dealers exactly as before) ...
     {"name": "DriveCoolCars", "url": "https://www.drivecoolcars.com/newandusedcars?Year=2024&MakeName=Tesla&ModelName=Model%20Y&ClearAll=1", "detail_pattern": r"/vdp/"},
     {"name": "Evolving Motors", "url": "https://www.evolvingmotors.com/inventory/?make=tesla&model=model+y", "detail_pattern": r"/inventory/tesla/model-y/"},
     {"name": "DongCar 2023", "url": "https://www.dongcarinc.com/inventory/tesla/model-y/?vehicle_year=2023", "detail_pattern": r"/inventory/"},
@@ -117,36 +116,15 @@ def scrape_detail(url):
     try:
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        description = soup.get_text().lower()
-        has_fsd_text = any(kw in description for kw in FSD_KEYWORDS)
-        matched_keywords = [kw for kw in FSD_KEYWORDS if kw in description]
-        if has_fsd_text:
-            print(f"   → TEXT MATCH on {url} → keywords: {matched_keywords}")
-
-        has_fsd_screen = False
-        for img in soup.find_all('img'):
-            img_url = (img.get('src') or img.get('data-src') or img.get('data-lazy') or 
-                       img.get('data-original') or img.get('data-srcset') or img.get('srcset'))
-            if img_url and any(ext in (img_url.lower() if isinstance(img_url, str) else "") for ext in ('.jpg', '.png', '.jpeg', '.webp')):
-                if not img_url.startswith('http'):
-                    continue
-                try:
-                    img_resp = requests.get(img_url, headers=headers, timeout=10)
-                    img_data = Image.open(io.BytesIO(img_resp.content))
-                    ocr_text = pytesseract.image_to_string(img_data).lower()
-                    if any(kw in ocr_text for kw in FSD_KEYWORDS):
-                        has_fsd_screen = True
-                        print(f"   → OCR MATCH on image {img_url[:80]}... → found FSD")
-                        break
-                    else:
-                        print(f"   → OCR ran but no FSD keywords found in image")
-                except Exception:
-                    continue
-        return {'has_fsd_text': has_fsd_text, 'has_fsd_screen': has_fsd_screen}
+        description = response.text.lower()
+        has_fsd = any(kw in description for kw in FSD_KEYWORDS)
+        if has_fsd:
+            matched = [kw for kw in FSD_KEYWORDS if kw in description]
+            print(f"   → TEXT MATCH found on {url} | Keywords: {matched}")
+        return {'has_fsd': has_fsd}
     except Exception as e:
         print(f"⚠️ Error on detail page {url}: {e}")
-        return {'has_fsd_text': False, 'has_fsd_screen': False}
+        return {'has_fsd': False}
 
 # ====================== MAIN RUN ======================
 current_vins_this_run = set()
@@ -163,25 +141,59 @@ for dealer in DEALERS:
         current_vins_this_run.add(vin)
         current_price_num = parse_price(listing['price'])
         detail = scrape_detail(listing['detail_url'])
-        is_fsd_hit = detail['has_fsd_text'] or detail['has_fsd_screen']
-
-        if vin in seen:
-            # price drop logic (same as before)
-            ...
+        if not detail['has_fsd']:
             continue
 
-        if is_fsd_hit:
-            # alert logic (same as before)
-            ...
-            new_alerts.append(alert_body)
-            seen[vin] = {"price": current_price_num, "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
+        if vin in seen:
+            old_price_num = seen[vin].get("price")
+            if current_price_num and old_price_num and current_price_num < old_price_num:
+                # price drop alert logic (add your full alert_body here if you want)
+                print(f"   → Price drop detected for VIN {vin}")
+            seen[vin] = {"price": current_price_num or old_price_num, "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
+            continue
 
-# sold detection (unchanged)
-...
+        # New FSD hit
+        distance = "National"
+        try:
+            location = geolocator.geocode(dealer["name"] + ", USA", timeout=10)
+            if location:
+                dist = geodesic(USER_COORDS, (location.latitude, location.longitude)).miles
+                distance = f"{dist:.0f} miles from you"
+        except:
+            pass
 
-# email + save (unchanged)
+        alert_body = f"""
+        <h2>🚀 New FSD-Loaded Model Y Found!</h2>
+        <p><strong>Dealer:</strong> {listing['dealer']}</p>
+        <p><strong>Title:</strong> {listing['title']}</p>
+        <p><strong>Price:</strong> {listing['price']} | <strong>Miles:</strong> {listing['miles']}</p>
+        <p><strong>Distance:</strong> {distance}</p>
+        <p><strong>FSD detected in text</strong></p>
+        <p><a href="{listing['detail_url']}">View Listing →</a></p>
+        """
+        new_alerts.append(alert_body)
+        seen[vin] = {"price": current_price_num, "last_seen": datetime.now().isoformat(), "dealer": dealer["name"]}
+        print(f"✅ New match added: {listing['title']} at {listing['dealer']}")
+
+# Sold detection
+for vin in list(seen.keys()):
+    if vin not in current_vins_this_run:
+        last_price = seen[vin].get("price")
+        dealer_name = seen[vin].get("dealer", "Unknown Dealer")
+        alert_body = f"""
+        <h2>🚗 Likely Sold / Removed</h2>
+        <p><strong>Dealer:</strong> {dealer_name}</p>
+        <p><strong>VIN:</strong> {vin}</p>
+        <p><strong>Last known price:</strong> ${last_price:,.0f if last_price else 'Unknown'}</p>
+        """
+        sold_alerts.append(alert_body)
+        del seen[vin]
+
+all_alerts = new_alerts + sold_alerts
 if all_alerts:
-    ...
+    subject = f"🚀 {len(new_alerts)} New + {len(sold_alerts)} Sold/Price-Change FSD Model Y Update(s)"
+    body = "\n\n".join(all_alerts)
+    send_email(subject, body)
 else:
     print("No new hits, price drops, or sold vehicles this run.")
 

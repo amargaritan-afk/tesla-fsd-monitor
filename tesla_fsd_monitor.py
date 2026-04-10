@@ -13,23 +13,25 @@ from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import re
-import sys
 
-# ====================== TESSERACT PATH FIX + GRACEFUL FALLBACK ======================
+# ====================== SAFE TESSERACT INITIALIZATION ======================
+OCR_AVAILABLE = False
 try:
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-    # Quick test to verify Tesseract is working
-    test_ocr = pytesseract.image_to_string(Image.new('RGB', (100, 100), color = 'white'))
-    print("✅ Tesseract OCR initialized successfully")
+    # Test it once
+    _ = pytesseract.image_to_string(Image.new('RGB', (50, 50), color='white'))
+    OCR_AVAILABLE = True
+    print("✅ Tesseract OCR initialized successfully on GitHub runner")
 except Exception as e:
-    print(f"⚠️ Tesseract failed to initialize: {e}")
-    print("   → OCR will be skipped for this run. Text matching will still work.")
-    # Disable OCR for the rest of the run
-    def safe_ocr(image):
+    print(f"⚠️ Tesseract failed to start: {e}")
+    print("   → OCR will be disabled for this run. Text-only matching will continue.")
+    # Fallback: disable OCR calls
+    def dummy_ocr(*args, **kwargs):
         return ""
-    pytesseract.image_to_string = safe_ocr
+    pytesseract.image_to_string = dummy_ocr
 
 # ====================== YOUR SETTINGS ======================
+# (rest of your script stays exactly the same from here: ZIP_CODE, FSD_KEYWORDS, SEEN_FILE, etc.)
 ZIP_CODE = "93453"
 USER_COORDS = (35.6, -120.7)
 EMAIL_TO = os.getenv("EMAIL_TO", "amargaritan@gmail.com")

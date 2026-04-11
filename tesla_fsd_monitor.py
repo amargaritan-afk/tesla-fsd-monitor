@@ -15,12 +15,11 @@ USER_COORDS = (35.6, -120.7)
 EMAIL_TO = os.getenv("EMAIL_TO", "amargaritan@gmail.com")
 
 FSD_KEYWORDS = [
-    "full self-driving", "fsd", "included package", "full self drive",
+    "full self-driving", " fsd", "included package", "full self drive",
     "included software", "hw4", "hw 4", "hardware 4",
     "full self drive hw4", "full self drive", "autopilot hw4",
-    # Strong matches for DriveCoolCars / Redline style
     "self drive hw4", "software: full self", "included software: full",
-    "drive hw4", "full self drive hw"
+    "drive hw4"
 ]
 
 SEEN_FILE = "seen_listings.json"
@@ -45,7 +44,7 @@ def send_email(subject, body):
     email_from = os.getenv("EMAIL_FROM")
     email_pass = os.getenv("EMAIL_PASSWORD")
     if not email_from or not email_pass:
-        print("⚠️ Email credentials missing in GitHub Secrets.")
+        print("⚠️ Email credentials missing.")
         return False
     try:
         msg = MIMEMultipart()
@@ -74,7 +73,8 @@ DEALERS = [
     {"name": "Trusted Auto", "url": "https://www.trustedauto.org/inventory/?make=tesla&vehicle_year=2023,2024,2025&model=model+y", "detail_pattern": r"/inventory/"},
     {"name": "Find My Electric", "url": "https://www.findmyelectric.com/listings/?models=Model%20Y&makes=Tesla", "detail_pattern": r"/listings/"},
     {"name": "Premium Autos", "url": "https://www.premiumautosinc.com/tesla?year[gt]=2023&year[lt]=2026&model[]=Model%20Y&trim[]=Long%20Range&drivetrainstandard[]=AWD&drivetrainstandard[]=RWD&mileage[lt]=50000", "detail_pattern": r"/tesla/"},
-    {"name": "California Beemers 2023", "url": "https://www.californiabeemers.com/pre-owned-cars/2023/Tesla/Model-Y?sort=InternetPrice&dir=desc", "detail_pattern": r"/pre-owned-cars/"},
+    # Improved California Beemers 2023 - more specific pattern
+    {"name": "California Beemers 2023", "url": "https://www.californiabeemers.com/pre-owned-cars/2023/Tesla/Model-Y?sort=InternetPrice&dir=desc", "detail_pattern": r"/pre-owned-cars/2023/Tesla/Model-Y/"},
     {"name": "California Beemers 2024", "url": "https://www.californiabeemers.com/pre-owned-cars/2024/Tesla/Model-Y?sort=InternetPrice&dir=desc", "detail_pattern": r"/pre-owned-cars/"},
     {"name": "California Beemers 2025", "url": "https://www.californiabeemers.com/pre-owned-cars/2025/Tesla/Model-Y?sort=InternetPrice&dir=desc", "detail_pattern": r"/pre-owned-cars/"},
     {"name": "California Beemers 2026", "url": "https://www.californiabeemers.com/pre-owned-cars/2026/Tesla/Model-Y?sort=InternetPrice&dir=desc", "detail_pattern": r"/pre-owned-cars/"},
@@ -126,8 +126,8 @@ def scrape_detail(url):
         if has_fsd:
             matched = [kw for kw in FSD_KEYWORDS if kw in description]
             print(f"   → ✅ TEXT MATCH on {url} | Keywords: {matched}")
-        elif "drivecoolcars" in url.lower():
-            print(f"   → DriveCoolCars checked - no strong FSD match: {url}")
+        elif "drivecoolcars" in url.lower() or "californiabeemers" in url.lower():
+            print(f"   → Dealer page checked - no strong FSD match: {url}")
         return {'has_fsd': has_fsd}
     except Exception as e:
         print(f"⚠️ Error on detail page {url}: {e}")

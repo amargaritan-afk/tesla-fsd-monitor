@@ -17,7 +17,10 @@ EMAIL_TO = os.getenv("EMAIL_TO", "amargaritan@gmail.com")
 FSD_KEYWORDS = [
     "full self-driving", "fsd", "included package", "full self drive",
     "included software", "hw4", "hw 4", "hardware 4",
-    "full self drive hw4", "full self drive", "autopilot hw4"
+    "full self drive hw4", "full self drive", "autopilot hw4",
+    # Strong matches for DriveCoolCars / Redline style
+    "self drive hw4", "software: full self", "included software: full",
+    "drive hw4", "full self drive hw"
 ]
 
 SEEN_FILE = "seen_listings.json"
@@ -123,6 +126,8 @@ def scrape_detail(url):
         if has_fsd:
             matched = [kw for kw in FSD_KEYWORDS if kw in description]
             print(f"   → ✅ TEXT MATCH on {url} | Keywords: {matched}")
+        elif "drivecoolcars" in url.lower():
+            print(f"   → DriveCoolCars checked - no strong FSD match: {url}")
         return {'has_fsd': has_fsd}
     except Exception as e:
         print(f"⚠️ Error on detail page {url}: {e}")

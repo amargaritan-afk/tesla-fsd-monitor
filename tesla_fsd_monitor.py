@@ -50,11 +50,9 @@ def send_email(subject, body):
         msg['To'] = EMAIL_TO
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'html'))
-
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(email_from, email_pass)
-        # Most reliable method for Gmail
         server.sendmail(email_from, EMAIL_TO, msg.as_string())
         server.quit()
         print(f"✅ Email sent successfully to {EMAIL_TO}")
@@ -182,31 +180,7 @@ with open(SEEN_FILE, 'w') as f:
 if new_alerts:
     subject = f"🚀 {len(new_alerts)} New FSD/HW4 Model Y Match(es) Found!"
     body = "\n\n".join(new_alerts)
-    def send_email(subject, body):
-    email_from = os.getenv("EMAIL_FROM")
-    email_pass = os.getenv("EMAIL_PASSWORD")
-    if not email_from or not email_pass:
-        print("⚠️ Email credentials missing in GitHub Secrets.")
-        return False
-
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = email_from
-        msg['To'] = EMAIL_TO
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'html'))
-
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(email_from, email_pass)
-        # This is the most reliable way for Gmail
-        server.sendmail(email_from, [EMAIL_TO], msg.as_string())
-        server.quit()
-        print(f"✅ Email sent successfully to {EMAIL_TO}")
-        return True
-    except Exception as e:
-        print(f"❌ Email failed: {e}")
-        return False
+    send_email(subject, body)
 else:
     print("No new matches this run.")
 
